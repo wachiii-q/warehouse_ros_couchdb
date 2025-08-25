@@ -33,9 +33,9 @@
 
 #include <boost/filesystem.hpp>
 #include <geometry_msgs/msg/vector3.hpp>
-#include <warehouse_ros_sqlite/database_connection.hpp>
-#include <warehouse_ros_sqlite/utils.hpp>
-#include <warehouse_ros_sqlite/exceptions.hpp>
+#include <warehouse_ros_couchdb/database_connection.hpp>
+#include <warehouse_ros_couchdb/utils.hpp>
+#include <warehouse_ros_couchdb/exceptions.hpp>
 
 #include <atomic>
 #include <condition_variable>
@@ -58,7 +58,7 @@ struct BusyHandler : ::testing::Test
       FAIL() << "could not create temporary dir";
     }
     tmp_file_ = tmp_dir_ / "db.sqlite";
-    db_conn_.reset(new warehouse_ros_sqlite::DatabaseConnection());
+    db_conn_.reset(new warehouse_ros_couchdb::DatabaseConnection());
     db_conn_->setParams(tmp_file_.string(), 0);
     ASSERT_TRUE(db_conn_->connect());
     coll_ = db_conn_->openCollectionPtr<V>("main", "coll");
@@ -74,7 +74,7 @@ struct BusyHandler : ::testing::Test
 
   static bf::path tmp_dir_;
   static bf::path tmp_file_;
-  static std::unique_ptr<warehouse_ros_sqlite::DatabaseConnection> db_conn_;
+  static std::unique_ptr<warehouse_ros_couchdb::DatabaseConnection> db_conn_;
   static warehouse_ros::MessageCollection<V>::Ptr coll_;
   static sqlite3 * startSecondInsert() noexcept;
 };
@@ -82,7 +82,7 @@ struct BusyHandler : ::testing::Test
 bf::path BusyHandler::tmp_dir_;
 bf::path BusyHandler::tmp_file_;
 warehouse_ros::MessageCollection<V>::Ptr BusyHandler::coll_;
-std::unique_ptr<warehouse_ros_sqlite::DatabaseConnection> BusyHandler::db_conn_;
+std::unique_ptr<warehouse_ros_couchdb::DatabaseConnection> BusyHandler::db_conn_;
 
 sqlite3 * BusyHandler::startSecondInsert() noexcept
 {
@@ -103,10 +103,10 @@ TEST_F(BusyHandler, TimeoutFires)
 {
   auto meta = coll_->createMetadata();
   // prepare second database accessor
-  warehouse_ros_sqlite::sqlite3_ptr second_db(
-    startSecondInsert(), warehouse_ros_sqlite::sqlite3_delete);
+  warehouse_ros_couchdb::sqlite3_ptr second_db(
+    startSecondInsert(), warehouse_ros_couchdb::sqlite3_delete);
   ASSERT_TRUE(static_cast<bool>(second_db));
-  EXPECT_THROW(coll_->insert(V(), meta), warehouse_ros_sqlite::InternalError);
+  EXPECT_THROW(coll_->insert(V(), meta), warehouse_ros_couchdb::InternalError);
 }
 
 TEST_F(BusyHandler, HandlerWorks)
@@ -122,8 +122,8 @@ TEST_F(BusyHandler, HandlerWorks)
   std::thread worker([&cv, &m, &second_db_setup]() {
       std::unique_lock<std::mutex> lk2(m);
       // block the database, protected under the mutex
-      warehouse_ros_sqlite::sqlite3_ptr second_db(
-        startSecondInsert(), warehouse_ros_sqlite::sqlite3_delete);
+      warehouse_ros_couchdb::sqlite3_ptr second_db(
+        startSecondInsert(), warehouse_ros_couchdb::sqlite3_delete);
 
       // tell main thread if blocking the db was successul and wake it up
       second_db_setup.store(static_cast<bool>(second_db));
@@ -134,7 +134,7 @@ TEST_F(BusyHandler, HandlerWorks)
         // wait for some time and unblock the db afterwards
         constexpr auto wait_interval =
         3 * std::chrono::milliseconds{
-          warehouse_ros_sqlite::DatabaseConnection::BUSY_WAIT_MILLISECS};
+          warehouse_ros_couchdb::DatabaseConnection::BUSY_WAIT_MILLISECS};
         std::this_thread::sleep_for(wait_interval);
         second_db.reset();
       }

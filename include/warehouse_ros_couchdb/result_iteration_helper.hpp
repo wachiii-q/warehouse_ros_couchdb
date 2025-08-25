@@ -28,39 +28,36 @@
 
 // SPDX-License-Identifier: BSD-3-Clause
 
-#ifndef WAREHOUSE_ROS_SQLITE__RESULT_ITERATION_HELPER_HPP_
-#define WAREHOUSE_ROS_SQLITE__RESULT_ITERATION_HELPER_HPP_
+#ifndef WAREHOUSE_ROS_COUCHDB__RESULT_ITERATION_HELPER_HPP_
+#define WAREHOUSE_ROS_COUCHDB__RESULT_ITERATION_HELPER_HPP_
 
+#include <warehouse_ros_couchdb/warehouse_ros_couchdb_export.hpp>
 #include <warehouse_ros/query_results.h>
-#include <warehouse_ros_sqlite/utils.hpp>
-#include <warehouse_ros_sqlite/warehouse_ros_sqlite_export.hpp>
 
+#include <json/json.h>
 #include <string>
-#include <utility>
 #include <vector>
 
-namespace warehouse_ros_sqlite
+namespace warehouse_ros_couchdb
 {
-class WAREHOUSE_ROS_SQLITE_EXPORT ResultIteratorHelper : public warehouse_ros::ResultIteratorHelper
+class WAREHOUSE_ROS_COUCHDB_EXPORT ResultIteratorHelper : public warehouse_ros::ResultIteratorHelper
 {
-  sqlite3_stmt_ptr stmt_;
-  std::vector<std::pair<std::string, int>> metadata_cols_;
-  void initMetadataCols();
-
+  Json::Value results_;
+  size_t current_index_;
+  
 public:
-  ResultIteratorHelper() = default;
-  explicit ResultIteratorHelper(sqlite3_stmt_ptr stmt)
-  : stmt_(std::move(stmt))
+  ResultIteratorHelper() : current_index_(0) {}
+  explicit ResultIteratorHelper(const Json::Value& results)
+  : results_(results), current_index_(0)
   {
-    initMetadataCols();
   }
+  
   bool next() override;
   bool hasData() const override;
   warehouse_ros::Metadata::ConstPtr metadata() const override;
   std::string message() const override;
 };
 
-}  // namespace warehouse_ros_sqlite
+}  // namespace warehouse_ros_couchdb
 
-
-#endif  // WAREHOUSE_ROS_SQLITE__RESULT_ITERATION_HELPER_HPP_
+#endif  // WAREHOUSE_ROS_COUCHDB__RESULT_ITERATION_HELPER_HPP_

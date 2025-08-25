@@ -1,0 +1,7 @@
+<library path="warehouse_ros_couchdb">
+  <class type="warehouse_ros_couchdb::DatabaseConnection" base_class_type="warehouse_ros::DatabaseConnection">
+    <description>
+    	This is an implementation of warehouse_ros for CouchDB
+    </description>
+  </class>
+</library>

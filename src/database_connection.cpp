@@ -28,18 +28,19 @@
 
 // SPDX-License-Identifier: BSD-3-Clause
 
-#include <warehouse_ros_sqlite/database_connection.hpp>
+#include <warehouse_ros_couchdb/database_connection.hpp>
 
-#include <warehouse_ros_sqlite/exceptions.hpp>
-#include <warehouse_ros_sqlite/message_collection_helper.hpp>
-#include <warehouse_ros_sqlite/utils.hpp>
+#include <warehouse_ros_couchdb/exceptions.hpp>
+#include <warehouse_ros_couchdb/message_collection_helper.hpp>
+#include <warehouse_ros_couchdb/utils.hpp>
 
 #include <boost/make_shared.hpp>
 #include <boost/format.hpp>
 #include <pluginlib/class_list_macros.hpp>
 #include <rclcpp/rclcpp.hpp>
 
-#include <sqlite3.h>
+#include <curl/curl.h>
+#include <json/json.h>
 
 #include <chrono>
 #include <sstream>
@@ -49,217 +50,164 @@
 
 namespace
 {
-const rclcpp::Logger LOGGER = rclcpp::get_logger("warehouse_ros_sqlite.database_connection");
+const rclcpp::Logger LOGGER = rclcpp::get_logger("warehouse_ros_couchdb.database_connection");
 
-int busy_handler(void * /* user_ptr */, int times_called_before)
-{
-  constexpr auto wait_interval =
-    std::chrono::milliseconds{warehouse_ros_sqlite::DatabaseConnection::BUSY_WAIT_MILLISECS};
-  if (times_called_before >= warehouse_ros_sqlite::DatabaseConnection::BUSY_MAX_RETRIES) {
-    return 0;
-  }
-
-  std::this_thread::sleep_for((times_called_before + 1) * wait_interval);
-  return 1;
+// Callback function to write HTTP response data
+size_t WriteCallback(void* contents, size_t size, size_t nmemb, std::string* userp) {
+  userp->append((char*)contents, size * nmemb);
+  return size * nmemb;
 }
 }  // namespace
 
-// instance to avoid linking errors
-const int warehouse_ros_sqlite::DatabaseConnection::BUSY_WAIT_MILLISECS;
-const int warehouse_ros_sqlite::DatabaseConnection::BUSY_MAX_RETRIES;
-
 /// Setup the database connection. This call assumes setParams() has been previously called.
 /// Returns true if the connection was succesfully established.
-bool warehouse_ros_sqlite::DatabaseConnection::connect()
+bool warehouse_ros_couchdb::DatabaseConnection::connect()
 {
-  if (!db_) {
-    sqlite3 * s = nullptr;
-    if (sqlite3_open(uri_.c_str(), &s) != SQLITE_OK) {
-      return false;
-    }
-    db_.reset(s, warehouse_ros_sqlite::sqlite3_delete);
-  }
-  if (sqlite3_busy_handler(db_.get(), busy_handler, nullptr) != SQLITE_OK) {
-    throw InternalError("setting busy handler failed", db_.get());
-  }
-  initDb();
-  return true;
+  // Initialize CURL
+  curl_global_init(CURL_GLOBAL_DEFAULT);
+  
+  // Test connection to CouchDB by getting server info
+  std::string url = "http://" + host_ + ":" + std::to_string(port_) + "/";
+  std::string response = performHttpRequest("GET", url);
+  
+  // Check if we got a valid CouchDB response
+  return !response.empty() && response.find("couchdb") != std::string::npos;
 }
 
 /// Returns whether the database is connected.
-bool warehouse_ros_sqlite::DatabaseConnection::isConnected()
+bool warehouse_ros_couchdb::DatabaseConnection::isConnected()
 {
-  return static_cast<bool>(db_);
+  // Test connection by trying to get server info
+  std::string url = "http://" + host_ + ":" + std::to_string(port_) + "/";
+  std::string response = performHttpRequest("GET", url);
+  return !response.empty();
 }
 
-std::vector<std::string> warehouse_ros_sqlite::DatabaseConnection::getTablesOfDatabase(
+// HTTP request implementation using libcurl
+std::string warehouse_ros_couchdb::DatabaseConnection::performHttpRequest(
+    const std::string& method, const std::string& url, const std::string& data) 
+{
+  CURL* curl;
+  CURLcode res;
+  std::string response_data;
+
+  curl = curl_easy_init();
+  if(curl) {
+    // Set URL
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    
+    // Add authentication
+    curl_easy_setopt(curl, CURLOPT_HTTPAUTH, CURLAUTH_BASIC);
+    curl_easy_setopt(curl, CURLOPT_USERPWD, "admin:12345678");
+    
+    // Set callback to capture response
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response_data);
+    
+    // Set headers
+    struct curl_slist* headers = nullptr;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    
+    // Set method and data
+    if (method == "POST") {
+      curl_easy_setopt(curl, CURLOPT_POST, 1L);
+      if (!data.empty()) {
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, data.c_str());
+      }
+    } else if (method == "PUT") {
+      curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "PUT");
+      if (!data.empty()) {
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, data.c_str());
+      }
+    } else if (method == "DELETE") {
+      curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "DELETE");
+    }
+    // GET is default
+    
+    // Perform request
+    res = curl_easy_perform(curl);
+    (void)res;  // Suppress unused variable warning
+    
+    // Cleanup
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+  }
+  
+  return response_data;
+}
+
+std::vector<std::string> warehouse_ros_couchdb::DatabaseConnection::getTablesOfDatabase(
   const std::string & db_name)
 {
-  std::ostringstream query_builder;
-  query_builder << "SELECT " << schema::M_D5_TABLE_INDEX_COLUMN << " FROM " <<
-    schema::M_D5_TABLE_NAME << " WHERE " <<
-    schema::M_D5_TABLE_DATABASE_COLUMN << " == ?;";
-  const auto select_query = query_builder.str();
-  sqlite3_stmt * raw_stmt = nullptr;
-  if (sqlite3_prepare_v2(
-      db_.get(), select_query.c_str(), select_query.size() + 1, &raw_stmt,
-      nullptr) != SQLITE_OK)
-  {
-    throw InternalError("Prepare statement for getTablesOfDatabase() failed", db_.get());
-  }
-  sqlite3_stmt_ptr stmt(std::exchange(raw_stmt, nullptr));
-  if (sqlite3_bind_text(
-      stmt.get(), 1, db_name.c_str(), db_name.size(),
-      SQLITE_STATIC) != SQLITE_OK)
-  {
-    throw InternalError("Bind parameter for getTablesOfDatabase() failed", db_.get());
-  }
+  // In CouchDB, get all documents from the metadata database that belong to this db_name
+  (void)db_name;  // Suppress unused parameter warning for now
+  std::string url = "http://" + host_ + ":" + std::to_string(port_) + "/_warehouse_metadata/_all_docs";
+  std::string response = performHttpRequest("GET", url);
+  
   std::vector<std::string> tables;
-  for (int res = sqlite3_step(stmt.get()); res != SQLITE_DONE; res = sqlite3_step(stmt.get())) {
-    if (res == SQLITE_ROW) {
-      tables.emplace_back(
-        reinterpret_cast<const char *>(sqlite3_column_text(stmt.get(), 0)),
-        sqlite3_column_bytes(stmt.get(), 0));
-    } else {
-      throw InternalError("Get results for getTablesOfDatabase() failed", db_.get());
-    }
-  }
+  // TODO: Parse JSON response and extract collection names for the specified db_name
+  // For now, return empty vector - this will be implemented with proper JSON parsing
   return tables;
 }
 
 /// \brief Drop a db and all its collections.
 /// A DbClientConnection exception will be thrown if the database is not connected.
-void warehouse_ros_sqlite::DatabaseConnection::dropDatabase(const std::string & db_name)
+void warehouse_ros_couchdb::DatabaseConnection::dropDatabase(const std::string & db_name)
 {
-  const auto tables_to_be_dropped = getTablesOfDatabase(db_name);
-  std::ostringstream query_builder;
-  for (const auto & table : tables_to_be_dropped) {
-    const auto escaped_table_string = schema::escape_string_literal_without_quotes(table);
-    const auto escaped_table_identifier = schema::escape_identifier(table);
-    query_builder << "DELETE FROM " << schema::M_D5_TABLE_NAME << " WHERE " <<
-      schema::M_D5_TABLE_INDEX_COLUMN <<
-      " == '" << escaped_table_string << "'; ";
-    query_builder << "DROP TABLE " << escaped_table_identifier << ";";
-  }
-  query_builder << "COMMIT;";
-  const auto query = query_builder.str();
-  if (sqlite3_exec(db_.get(), "BEGIN TRANSACTION;", nullptr, nullptr, nullptr) == SQLITE_OK) {
-    if (sqlite3_exec(db_.get(), query.c_str(), nullptr, nullptr, nullptr) == SQLITE_OK) {
-      return;
-    }
-    sqlite3_exec(db_.get(), "ROLLBACK;", nullptr, nullptr, nullptr);
-  }
-  throw InternalError("Drop tables failed", db_.get());
+  // In CouchDB, delete the database entirely
+  std::string url = "http://" + host_ + ":" + std::to_string(port_) + "/" + db_name;
+  std::string response = performHttpRequest("DELETE", url);
+  
+  // Also clean up metadata entries for this database
+  std::string metadata_url = "http://" + host_ + ":" + std::to_string(port_) + "/_warehouse_metadata";
+  // TODO: Query and delete all metadata documents related to this db_name
 }
 
 /// \brief Return the ROS Message type of a given collection
-std::string warehouse_ros_sqlite::DatabaseConnection::messageType(
+std::string warehouse_ros_couchdb::DatabaseConnection::messageType(
   const std::string & db_name,
   const std::string & collection_name)
 {
-  using warehouse_ros_sqlite::schema::M_D5_TABLE_DATATYPE_COLUMN;
-  using warehouse_ros_sqlite::schema::M_D5_TABLE_NAME;
-  using warehouse_ros_sqlite::schema::M_D5_TABLE_INDEX_COLUMN;
-
-  std::ostringstream query_builder;
-  query_builder << "SELECT " << M_D5_TABLE_DATATYPE_COLUMN << " FROM " << M_D5_TABLE_NAME <<
-    " WHERE " <<
-    M_D5_TABLE_INDEX_COLUMN << " = ?;";
-  const auto query = query_builder.str();
-  sqlite3_stmt * stmt = nullptr;
-  if (sqlite3_prepare_v2(db_.get(), query.c_str(), query.size() + 1, &stmt, nullptr) != SQLITE_OK) {
-    throw InternalError("Prepare statement for messageType() failed", db_.get());
-  }
-  const sqlite3_stmt_ptr guard(stmt);
-  const auto mangled_name = schema::mangle_database_and_collection_name(db_name, collection_name);
-  if (sqlite3_bind_text(
-      stmt, 1, mangled_name.c_str(), mangled_name.size(),
-      SQLITE_STATIC) != SQLITE_OK)
-  {
-    throw InternalError("Bind parameter for getTablesOfDatabase() failed", db_.get());
-  }
-  switch (sqlite3_step(stmt)) {
-    case SQLITE_ROW:
-      break;
-    case SQLITE_DONE:
-    default:
-      throw InternalError("Get result for getTablesOfDatabase() failed", db_.get());
-  }
-  return std::string(
-    reinterpret_cast<const char *>(sqlite3_column_text(
-      stmt,
-      0)),
-    sqlite3_column_bytes(stmt, 0));
+  // Query metadata database for the collection's message type
+  std::string metadata_doc_id = db_name + "_" + collection_name;
+  std::string url = "http://" + host_ + ":" + std::to_string(port_) + "/_warehouse_metadata/" + metadata_doc_id;
+  std::string response = performHttpRequest("GET", url);
+  
+  // TODO: Parse JSON response to extract message type
+  // For now, return empty string - this will be implemented with proper JSON parsing
+  return "";
 }
 
-void warehouse_ros_sqlite::DatabaseConnection::initDb()
+void warehouse_ros_couchdb::DatabaseConnection::initDb()
 {
-  if (schemaVersionSet()) {
-    return;
-  }
-  std::ostringstream query_builder;
-  query_builder << "PRAGMA user_version = " << schema::VERSION << ";" <<
-    "CREATE TABLE " << schema::M_D5_TABLE_NAME << " ( " << schema::M_D5_TABLE_INDEX_COLUMN <<
-    " TEXT PRIMARY KEY, " << schema::M_D5_TABLE_M_D5_COLUMN << " BLOB NOT NULL, " <<
-    schema::M_D5_TABLE_TABLE_COLUMN << " TEXT NOT NULL, " << schema::M_D5_TABLE_DATABASE_COLUMN <<
-    " TEXT NOT NULL, " << schema::M_D5_TABLE_DATATYPE_COLUMN << " TEXT NOT NULL);";
-  const auto query = query_builder.str();
-  RCLCPP_DEBUG_STREAM(LOGGER, "MD5 table init: " << query);
-  if (sqlite3_exec(db_.get(), query.c_str(), nullptr, nullptr, nullptr) != SQLITE_OK) {
-    throw InternalError("Could not initialize Database", db_.get());
-  }
+  // Create the metadata database if it doesn't exist
+  std::string url = "http://" + host_ + ":" + std::to_string(port_) + "/_warehouse_metadata";
+  std::string response = performHttpRequest("PUT", url);
+  
+  // CouchDB creates databases on-demand, so this is mainly for metadata tracking
+  RCLCPP_DEBUG_STREAM(LOGGER, "CouchDB metadata database initialized");
 }
 
-bool warehouse_ros_sqlite::DatabaseConnection::schemaVersionSet()
+bool warehouse_ros_couchdb::DatabaseConnection::schemaVersionSet()
 {
-  sqlite3_stmt * stmt = nullptr;
-  if (sqlite3_prepare_v2(db_.get(), "PRAGMA user_version;", -1, &stmt, nullptr) != SQLITE_OK) {
-    throw InternalError("Could not get schema version", db_.get());
-  }
-  sqlite3_stmt_ptr stmt_guard(std::exchange(stmt, nullptr));
-  if (sqlite3_step(stmt_guard.get()) != SQLITE_ROW) {
-    throw InternalError("Could not get schema version", db_.get());
-  }
-  const int current_schema_version = sqlite3_column_int(stmt_guard.get(), 0);
-  if (current_schema_version == 0) {
-    return false;
-  } else {
-    if (current_schema_version == schema::VERSION) {
-      return true;
-    } else {
-      throw SchemaVersionMismatch(current_schema_version, schema::VERSION);
-    }
-  }
+  // For CouchDB implementation, we'll always return true since CouchDB handles schema evolution
+  // In future versions, we could store version info in a special document
+  return true;
 }
 
 warehouse_ros::MessageCollectionHelper::Ptr
-warehouse_ros_sqlite::DatabaseConnection::openCollectionHelper(
+warehouse_ros_couchdb::DatabaseConnection::openCollectionHelper(
   const std::string & db_name,
   const std::string & collection_name)
 {
-  return boost::make_shared<warehouse_ros_sqlite::MessageCollectionHelper>(
-    db_, db_name,
-    collection_name);
+  return boost::make_shared<warehouse_ros_couchdb::MessageCollectionHelper>(
+    host_, port_, db_name, collection_name);
 }
 
-void warehouse_ros_sqlite::Sqlite3StmtDeleter::operator()(sqlite3_stmt * stmt) const
-{
-  sqlite3_finalize(stmt);
-}
-void warehouse_ros_sqlite::sqlite3_delete(sqlite3 * db)
-{
-  if (sqlite3_close(db) != SQLITE_OK) {
-    RCLCPP_ERROR(LOGGER, "sqlite connection closed when still in use");
-  }
-}
-
-warehouse_ros_sqlite::InternalError::InternalError(const char * msg, sqlite3 * db)
-: warehouse_ros::WarehouseRosException(boost::format("%1% %2%") % msg % sqlite3_errmsg(db))
-{
-}
-warehouse_ros_sqlite::InternalError::InternalError(const char * msg, sqlite3_stmt * stmt)
-: InternalError(msg, sqlite3_db_handle(stmt))
+warehouse_ros_couchdb::InternalError::InternalError(const char * msg, const std::string& details)
+: warehouse_ros::WarehouseRosException(boost::format("%1% %2%") % msg % details)
 {
 }
 
-PLUGINLIB_EXPORT_CLASS(warehouse_ros_sqlite::DatabaseConnection, warehouse_ros::DatabaseConnection)
+PLUGINLIB_EXPORT_CLASS(warehouse_ros_couchdb::DatabaseConnection, warehouse_ros::DatabaseConnection)

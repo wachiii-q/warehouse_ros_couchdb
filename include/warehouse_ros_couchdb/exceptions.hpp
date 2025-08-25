@@ -28,41 +28,42 @@
 
 // SPDX-License-Identifier: BSD-3-Clause
 
-#include <gtest/gtest.h>
-#include <warehouse_ros/database_loader.h>
-#include <geometry_msgs/msg/vector3.hpp>
-#include <rclcpp/rclcpp.hpp>
-#include <memory>
-#include <string>
+#ifndef WAREHOUSE_ROS_COUCHDB__EXCEPTIONS_HPP_
+#define WAREHOUSE_ROS_COUCHDB__EXCEPTIONS_HPP_
 
-TEST(DatabaseLoader, LoadSQLite)
+#include <warehouse_ros/exceptions.h>
+#include <warehouse_ros_couchdb/warehouse_ros_couchdb_export.hpp>
+#include <boost/format.hpp>
+
+namespace warehouse_ros_couchdb
 {
-  const auto node = std::make_shared<rclcpp::Node>("tester");
-  node->declare_parameter<std::string>(
-    "warehouse_plugin",
-    "warehouse_ros_couchdb::DatabaseConnection");
-  warehouse_ros::DatabaseLoader l(node);
-
-  const auto d = l.loadDatabase();
-
-  ASSERT_TRUE(static_cast<bool>(d));
-  d->setParams(":memory:", 0);
-
-  ASSERT_TRUE(d->connect());
-
-  using V = geometry_msgs::msg::Vector3;
-  auto coll = d->openCollection<V>("main", "coll");
-  auto meta1 = coll.createMetadata();
-  meta1->append("x", 3);
-
-  coll.insert(V(), meta1);
-
-  EXPECT_EQ(coll.count(), 1U);
-}
-
-int main(int argc, char ** argv)
+struct WAREHOUSE_ROS_COUCHDB_EXPORT InternalError : public warehouse_ros::WarehouseRosException
 {
-  testing::InitGoogleTest(&argc, argv);
-  rclcpp::init(argc, argv);
-  return RUN_ALL_TESTS();
-}
+  using warehouse_ros::WarehouseRosException::WarehouseRosException;
+  InternalError(const char * msg, const std::string& details);
+};
+
+struct WAREHOUSE_ROS_COUCHDB_EXPORT DatatypeMismatch : public warehouse_ros::WarehouseRosException
+{
+  using warehouse_ros::WarehouseRosException::WarehouseRosException;
+};
+
+struct WAREHOUSE_ROS_COUCHDB_EXPORT SchemaVersionMismatch : public warehouse_ros::
+  WarehouseRosException
+{
+  int version_in_database_, version_compiled_in_;
+  using warehouse_ros::WarehouseRosException::WarehouseRosException;
+  SchemaVersionMismatch(int version_in_database, int version_compiled_in)
+  : warehouse_ros::WarehouseRosException(
+      boost::format(
+        "Database schema version mismatch, stored in file: %1%, compiled in version: %2%") %
+      version_in_database % version_compiled_in),
+    version_in_database_(version_in_database),
+    version_compiled_in_(version_compiled_in)
+  {
+  }
+};
+}  // namespace warehouse_ros_couchdb
+
+
+#endif  // WAREHOUSE_ROS_COUCHDB__EXCEPTIONS_HPP_

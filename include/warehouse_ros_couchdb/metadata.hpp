@@ -28,48 +28,54 @@
 
 // SPDX-License-Identifier: BSD-3-Clause
 
-#ifndef WAREHOUSE_ROS_SQLITE__EXCEPTIONS_HPP_
-#define WAREHOUSE_ROS_SQLITE__EXCEPTIONS_HPP_
+#ifndef WAREHOUSE_ROS_COUCHDB__METADATA_HPP_
+#define WAREHOUSE_ROS_COUCHDB__METADATA_HPP_
 
-#include <warehouse_ros/exceptions.h>
-#include <warehouse_ros_sqlite/warehouse_ros_sqlite_export.hpp>
-#include <boost/format.hpp>
+#include <warehouse_ros_couchdb/utils.hpp>
+#include <warehouse_ros_couchdb/warehouse_ros_couchdb_export.hpp>
+
+#include <warehouse_ros/metadata.h>
+#include <boost/variant.hpp>
+
+#include <map>
+#include <set>
+#include <string>
 
 extern "C" {
-struct sqlite3;
-struct sqlite3_stmt;
+// Forward declarations for JSON handling
+struct json_object;
 }
 
-namespace warehouse_ros_sqlite
+namespace warehouse_ros_couchdb
 {
-struct WAREHOUSE_ROS_SQLITE_EXPORT InternalError : public warehouse_ros::WarehouseRosException
+class WAREHOUSE_ROS_COUCHDB_EXPORT Metadata : public warehouse_ros::Metadata
 {
-  using warehouse_ros::WarehouseRosException::WarehouseRosException;
-  InternalError(const char * msg, sqlite3 * db);
-  InternalError(const char * msg, sqlite3_stmt * stmt);
-};
-
-struct WAREHOUSE_ROS_SQLITE_EXPORT DatatypeMismatch : public warehouse_ros::WarehouseRosException
-{
-  using warehouse_ros::WarehouseRosException::WarehouseRosException;
-};
-
-struct WAREHOUSE_ROS_SQLITE_EXPORT SchemaVersionMismatch : public warehouse_ros::
-  WarehouseRosException
-{
-  int version_in_database_, version_compiled_in_;
-  using warehouse_ros::WarehouseRosException::WarehouseRosException;
-  SchemaVersionMismatch(int version_in_database, int version_compiled_in)
-  : warehouse_ros::WarehouseRosException(
-      boost::format(
-        "Database schema version mismatch, stored in file: %1%, compiled in version: %2%") %
-      version_in_database % version_compiled_in),
-    version_in_database_(version_in_database),
-    version_compiled_in_(version_compiled_in)
+public:
+  using Variant = boost::variant<NullValue, std::string, double, int>;
+  void append(const std::string & name, const std::string & val) override;
+  void append(const std::string & name, const double val) override;
+  void append(const std::string & name, const int val) override;
+  void append(const std::string & name, const bool val) override;
+  std::string lookupString(const std::string & name) const override;
+  double lookupDouble(const std::string & name) const override;
+  int lookupInt(const std::string & name) const override;
+  bool lookupBool(const std::string & name) const override;
+  bool lookupField(const std::string & name) const override;
+  std::set<std::string> lookupFieldNames() const override;
+  const auto & data() const
   {
+    return data_;
   }
+  void ensureColumns(const std::string & host, const std::string & collection_name) const;
+
+private:
+  // ordered map for reproducible iterating
+  std::map<std::string, Variant> data_;
+
+  template<typename R>
+  R doLookup(const std::string & name) const;
 };
-}  // namespace warehouse_ros_sqlite
 
+}  // namespace warehouse_ros_couchdb
 
-#endif  // WAREHOUSE_ROS_SQLITE__EXCEPTIONS_HPP_
+#endif  // WAREHOUSE_ROS_COUCHDB__METADATA_HPP_

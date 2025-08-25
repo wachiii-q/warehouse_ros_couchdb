@@ -28,35 +28,34 @@
 
 // SPDX-License-Identifier: BSD-3-Clause
 
-#ifndef WAREHOUSE_ROS_SQLITE__MESSAGE_COLLECTION_HELPER_HPP_
-#define WAREHOUSE_ROS_SQLITE__MESSAGE_COLLECTION_HELPER_HPP_
+#ifndef WAREHOUSE_ROS_COUCHDB__MESSAGE_COLLECTION_HELPER_HPP_
+#define WAREHOUSE_ROS_COUCHDB__MESSAGE_COLLECTION_HELPER_HPP_
 
 #include <warehouse_ros/message_collection.h>
-#include <warehouse_ros_sqlite/utils.hpp>
-#include <warehouse_ros_sqlite/warehouse_ros_sqlite_export.hpp>
+#include <warehouse_ros_couchdb/utils.hpp>
+#include <warehouse_ros_couchdb/warehouse_ros_couchdb_export.hpp>
 
 #include <string>
 #include <utility>
 
-namespace warehouse_ros_sqlite
+namespace warehouse_ros_couchdb
 {
-class WAREHOUSE_ROS_SQLITE_EXPORT MessageCollectionHelper : public warehouse_ros::
+class WAREHOUSE_ROS_COUCHDB_EXPORT MessageCollectionHelper : public warehouse_ros::
   MessageCollectionHelper
 {
-  sqlite3_ptr db_;
+  std::string host_;
+  unsigned port_;
   std::string collection_name_;
   std::string db_name_;
-  std::string mangled_tablename_;
-  schema::escaped_tablename escaped_mangled_name_;
 
 public:
   MessageCollectionHelper() = default;
-  MessageCollectionHelper(sqlite3_ptr db, const std::string & db_name, const std::string & name)
-  : db_(std::move(db)),
+  MessageCollectionHelper(const std::string & host, unsigned port, 
+                         const std::string & db_name, const std::string & name)
+  : host_(host),
+    port_(port),
     collection_name_(name),
-    db_name_(db_name),
-    mangled_tablename_(schema::mangle_database_and_collection_name(db_name, name)),
-    escaped_mangled_name_(schema::escape_and_mangle_database_and_collection_name(db_name, name))
+    db_name_(db_name)
   {
   }
   bool initialize(const std::string & datatype, const std::string & md5) override;
@@ -86,6 +85,6 @@ private:
   Md5CompareResult findAndMatchMd5Sum(const std::array<unsigned char, 16> & md5_bytes);
 };
 
-}  // namespace warehouse_ros_sqlite
+}  // namespace warehouse_ros_couchdb
 
-#endif  // WAREHOUSE_ROS_SQLITE__MESSAGE_COLLECTION_HELPER_HPP_
+#endif  // WAREHOUSE_ROS_COUCHDB__MESSAGE_COLLECTION_HELPER_HPP_

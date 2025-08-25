@@ -28,35 +28,34 @@
 
 // SPDX-License-Identifier: BSD-3-Clause
 
-#ifndef WAREHOUSE_ROS_SQLITE__DATABASE_CONNECTION_HPP_
-#define WAREHOUSE_ROS_SQLITE__DATABASE_CONNECTION_HPP_
+#ifndef WAREHOUSE_ROS_COUCHDB__DATABASE_CONNECTION_HPP_
+#define WAREHOUSE_ROS_COUCHDB__DATABASE_CONNECTION_HPP_
 
 #include <warehouse_ros/database_connection.h>
 #include <warehouse_ros/message_collection.h>
-#include <warehouse_ros_sqlite/utils.hpp>
-#include <warehouse_ros_sqlite/warehouse_ros_sqlite_export.hpp>
+#include <warehouse_ros_couchdb/utils.hpp>
+#include <warehouse_ros_couchdb/warehouse_ros_couchdb_export.hpp>
 
 #include <string>
 #include <utility>
 #include <vector>
 
-namespace warehouse_ros_sqlite
+namespace warehouse_ros_couchdb
 {
-class WAREHOUSE_ROS_SQLITE_EXPORT DatabaseConnection : public warehouse_ros::DatabaseConnection
+class WAREHOUSE_ROS_COUCHDB_EXPORT DatabaseConnection : public warehouse_ros::DatabaseConnection
 {
-  sqlite3_ptr db_;
+  std::string host_;
+  unsigned port_;
   std::string uri_;
 
 public:
   DatabaseConnection() = default;
-  explicit DatabaseConnection(sqlite3_ptr db)
-  : db_(std::move(db))
-  {
-  }
+  
   /// \brief Set database connection params.
-  bool setParams(const std::string & host, unsigned /*port*/, float /*timeout*/ = 60.0) override
+  bool setParams(const std::string & host, unsigned port, float /*timeout*/ = 60.0) override
   {
-    uri_ = host;
+    host_ = host;
+    port_ = port;
     return true;
   }
 
@@ -92,7 +91,10 @@ protected:
   void initDb();
   std::vector<std::string> getTablesOfDatabase(const std::string & db_name);
   bool schemaVersionSet();
-};
-}  // namespace warehouse_ros_sqlite
 
-#endif  // WAREHOUSE_ROS_SQLITE__DATABASE_CONNECTION_HPP_
+private:
+  std::string performHttpRequest(const std::string& method, const std::string& url, const std::string& data = "");
+};
+}  // namespace warehouse_ros_couchdb
+
+#endif  // WAREHOUSE_ROS_COUCHDB__DATABASE_CONNECTION_HPP_

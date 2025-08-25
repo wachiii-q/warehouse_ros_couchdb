@@ -33,8 +33,8 @@
 #include <geometry_msgs/msg/point.hpp>
 #include <geometry_msgs/msg/pose.hpp>
 #include <geometry_msgs/msg/vector3.hpp>
-#include <warehouse_ros_sqlite/database_connection.hpp>
-#include <warehouse_ros_sqlite/utils.hpp>
+#include <warehouse_ros_couchdb/database_connection.hpp>
+#include <warehouse_ros_couchdb/utils.hpp>
 
 #include <memory>
 
@@ -43,14 +43,14 @@ class ConnectionTest : public ::testing::Test
 protected:
   void SetUp() override
   {
-    conn_.reset(new warehouse_ros_sqlite::DatabaseConnection());
+    conn_.reset(new warehouse_ros_couchdb::DatabaseConnection());
     conn_->setParams(":memory:", 0);
     ASSERT_TRUE(conn_->connect());
   }
 
-  static std::unique_ptr<warehouse_ros_sqlite::DatabaseConnection> conn_;
+  static std::unique_ptr<warehouse_ros_couchdb::DatabaseConnection> conn_;
 };
-std::unique_ptr<warehouse_ros_sqlite::DatabaseConnection> ConnectionTest::conn_;
+std::unique_ptr<warehouse_ros_couchdb::DatabaseConnection> ConnectionTest::conn_;
 
 TEST_F(ConnectionTest, CreateCollection)
 {
@@ -463,13 +463,13 @@ TEST(Utils, Md5Validation)
     0x4a, 0x84, 0x2b, 0x65, 0xf4, 0x13, 0x08, 0x4d, 0xc2, 0xb1, 0x0f, 0xb4, 0x84, 0xea, 0x7f, 0x17,
   };
 
-  EXPECT_EQ(warehouse_ros_sqlite::parse_md5_hexstring(a), b);
+  EXPECT_EQ(warehouse_ros_couchdb::parse_md5_hexstring(a), b);
 
-  EXPECT_THROW(warehouse_ros_sqlite::parse_md5_hexstring("123abc"), std::invalid_argument);
+  EXPECT_THROW(warehouse_ros_couchdb::parse_md5_hexstring("123abc"), std::invalid_argument);
   const char * c = "Za842b65f413084dc2b10fb484ea7f17";
   const char * d = "aZ842b65f413084dc2b10fb484ea7f17";
-  EXPECT_THROW(warehouse_ros_sqlite::parse_md5_hexstring(c), std::invalid_argument);
-  EXPECT_THROW(warehouse_ros_sqlite::parse_md5_hexstring(d), std::invalid_argument);
+  EXPECT_THROW(warehouse_ros_couchdb::parse_md5_hexstring(c), std::invalid_argument);
+  EXPECT_THROW(warehouse_ros_couchdb::parse_md5_hexstring(d), std::invalid_argument);
 }
 
 int main(int argc, char ** argv)

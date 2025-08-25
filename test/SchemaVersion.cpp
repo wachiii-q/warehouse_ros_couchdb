@@ -31,9 +31,9 @@
 #include <gtest/gtest.h>
 #include <sqlite3.h>
 
-#include <warehouse_ros_sqlite/database_connection.hpp>
-#include <warehouse_ros_sqlite/exceptions.hpp>
-#include <warehouse_ros_sqlite/utils.hpp>
+#include <warehouse_ros_couchdb/database_connection.hpp>
+#include <warehouse_ros_couchdb/exceptions.hpp>
+#include <warehouse_ros_couchdb/utils.hpp>
 
 #include <string>
 
@@ -44,30 +44,30 @@ protected:
   {
     sqlite3 * db = nullptr;
     ASSERT_EQ(sqlite3_open(":memory:", &db), SQLITE_OK);
-    db_.reset(db, &warehouse_ros_sqlite::sqlite3_delete);
+    db_.reset(db, &warehouse_ros_couchdb::sqlite3_delete);
   }
 
-  static warehouse_ros_sqlite::sqlite3_ptr db_;
+  static warehouse_ros_couchdb::sqlite3_ptr db_;
 };
 
-warehouse_ros_sqlite::sqlite3_ptr SchemaVersion::db_;
+warehouse_ros_couchdb::sqlite3_ptr SchemaVersion::db_;
 
 TEST_F(SchemaVersion, WrongSchemaVersion)
 {
   const int wrong_schema = 2;
   static_assert(
-    wrong_schema != warehouse_ros_sqlite::schema::VERSION,
+    wrong_schema != warehouse_ros_couchdb::schema::VERSION,
     "schema version is not invalid");
 
   const std::string query = "PRAGMA user_version = " + std::to_string(wrong_schema) + ";";
   ASSERT_EQ(sqlite3_exec(db_.get(), query.c_str(), nullptr, nullptr, nullptr), SQLITE_OK);
 
-  warehouse_ros_sqlite::DatabaseConnection conn(db_);
+  warehouse_ros_couchdb::DatabaseConnection conn(db_);
   try {
     conn.connect();
     FAIL() << "connect() didn't throw any exception";
-  } catch (const warehouse_ros_sqlite::SchemaVersionMismatch & m) {
-    EXPECT_EQ(m.version_compiled_in_, warehouse_ros_sqlite::schema::VERSION);
+  } catch (const warehouse_ros_couchdb::SchemaVersionMismatch & m) {
+    EXPECT_EQ(m.version_compiled_in_, warehouse_ros_couchdb::schema::VERSION);
     EXPECT_EQ(m.version_in_database_, wrong_schema);
   } catch (...) {
     FAIL() << "connect() threw the wrong exception type";
@@ -79,34 +79,34 @@ TEST_F(SchemaVersion, NoSchemaVersionButTable)
   const int default_schema = 0;
   sqlite3_stmt * stmt = nullptr;
   ASSERT_EQ(sqlite3_prepare_v2(db_.get(), "PRAGMA user_version;", -1, &stmt, nullptr), SQLITE_OK);
-  warehouse_ros_sqlite::sqlite3_stmt_ptr stmt_guard(stmt);
+  warehouse_ros_couchdb::sqlite3_stmt_ptr stmt_guard(stmt);
   ASSERT_EQ(sqlite3_step(stmt), SQLITE_ROW);
   ASSERT_EQ(sqlite3_column_int(stmt, 0), default_schema);
 
   const std::string query =
-    std::string("CREATE TABLE ") + warehouse_ros_sqlite::schema::M_D5_TABLE_NAME +
+    std::string("CREATE TABLE ") + warehouse_ros_couchdb::schema::M_D5_TABLE_NAME +
     "(ID INTEGER PRIMARY KEY);";
   ASSERT_EQ(sqlite3_exec(db_.get(), query.c_str(), nullptr, nullptr, nullptr), SQLITE_OK);
 
-  warehouse_ros_sqlite::DatabaseConnection conn(db_);
-  EXPECT_THROW(conn.connect(), warehouse_ros_sqlite::InternalError);
+  warehouse_ros_couchdb::DatabaseConnection conn(db_);
+  EXPECT_THROW(conn.connect(), warehouse_ros_couchdb::InternalError);
 }
 
 TEST_F(SchemaVersion, CorrectSet)
 {
   {
-    warehouse_ros_sqlite::DatabaseConnection conn(db_);
+    warehouse_ros_couchdb::DatabaseConnection conn(db_);
     ASSERT_NO_THROW(conn.connect());
   }
   {
-    warehouse_ros_sqlite::DatabaseConnection conn(db_);
+    warehouse_ros_couchdb::DatabaseConnection conn(db_);
     ASSERT_NO_THROW(conn.connect());
   }
   sqlite3_stmt * stmt = nullptr;
   ASSERT_EQ(sqlite3_prepare_v2(db_.get(), "PRAGMA user_version;", -1, &stmt, nullptr), SQLITE_OK);
-  warehouse_ros_sqlite::sqlite3_stmt_ptr stmt_guard(stmt);
+  warehouse_ros_couchdb::sqlite3_stmt_ptr stmt_guard(stmt);
   ASSERT_EQ(sqlite3_step(stmt), SQLITE_ROW);
-  ASSERT_EQ(sqlite3_column_int(stmt, 0), warehouse_ros_sqlite::schema::VERSION);
+  ASSERT_EQ(sqlite3_column_int(stmt, 0), warehouse_ros_couchdb::schema::VERSION);
 }
 
 int main(int argc, char ** argv)

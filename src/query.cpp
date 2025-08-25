@@ -28,129 +28,184 @@
 
 // SPDX-License-Identifier: BSD-3-Clause
 
-#include <warehouse_ros_sqlite/query.hpp>
+#include <warehouse_ros_couchdb/query.hpp>
 
-#include <warehouse_ros_sqlite/impl/variant.hpp>
-
-#include <boost/variant/static_visitor.hpp>
 #include <rclcpp/rclcpp.hpp>
 
-#include <sqlite3.h>
-#include <warehouse_ros/exceptions.h>
-
-#include <cassert>
-#include <iomanip>
+#include <json/json.h>
+#include <sstream>
 #include <string>
 
-static const rclcpp::Logger LOGGER = rclcpp::get_logger("warehouse_ros_sqlite.query");
+static const rclcpp::Logger LOGGER = rclcpp::get_logger("warehouse_ros_couchdb.query");
 
-
-warehouse_ros_sqlite::sqlite3_stmt_ptr warehouse_ros_sqlite::Query::prepare(
-  sqlite3 * db_conn, const std::string & intro,
-  const std::string & outro,
-  int bind_start_col) const
+namespace warehouse_ros_couchdb
 {
-  sqlite3_stmt * stmt = nullptr;
-  const auto query = intro + query_.str() + outro + ";";
-  warehouse_ros_sqlite::sqlite3_stmt_ptr ans;
-  RCLCPP_DEBUG_STREAM(LOGGER, "query query: " << query);
-  if (sqlite3_prepare_v2(
-      db_conn, query.c_str(), query.size() + 1 /* null terminator*/, &stmt,
-      nullptr) != SQLITE_OK)
-  {
-    // TODO(gleichdick): check if all column exists and return nullptr if not
-    // not throwing an exception, missing column means empty result
-    RCLCPP_ERROR_STREAM(LOGGER, "Preparing Query failed: " << sqlite3_errmsg(db_conn));
-    return ans;
+
+void Query::append(const std::string & name, const std::string & val)
+{
+  if (!values_.empty()) {
+    query_ << " AND ";
   }
-  ans.reset(stmt);
-  assert(
-    static_cast<size_t>(sqlite3_bind_parameter_count(stmt)) ==
-    (values_.size() + bind_start_col - 1));
+  values_.emplace_back(val);
+  query_ << name << " = '" << val << "'";
+}
 
-  warehouse_ros_sqlite::BindVisitor visitor(stmt, bind_start_col);
-  for (const auto & value : values_) {
-    if (boost::apply_visitor(visitor, value) != SQLITE_OK) {
-      throw InternalError("Binding parameter to query failed", db_conn);
-    }
+void Query::append(const std::string & name, const double val)
+{
+  if (!values_.empty()) {
+    query_ << " AND ";
   }
-
-  return ans;
+  values_.emplace_back(val);
+  query_ << name << " = " << val;
 }
 
-void warehouse_ros_sqlite::Query::append(const std::string & name, const std::string & val)
+void Query::append(const std::string & name, const int val)
 {
-  doappend(name, " == ", val);
+  if (!values_.empty()) {
+    query_ << " AND ";
+  }
+  values_.emplace_back(val);
+  query_ << name << " = " << val;
 }
-void warehouse_ros_sqlite::Query::append(const std::string & name, const double val)
+
+void Query::append(const std::string & name, const bool val)
 {
-  doappend(name, " == ", val);
+  if (!values_.empty()) {
+    query_ << " AND ";
+  }
+  values_.emplace_back(val ? 1 : 0);
+  query_ << name << " = " << (val ? "true" : "false");
 }
-void warehouse_ros_sqlite::Query::append(const std::string & name, const int val)
+
+void Query::appendLT(const std::string & name, const double val)
 {
-  doappend(name, " == ", val);
+  if (!values_.empty()) {
+    query_ << " AND ";
+  }
+  values_.emplace_back(val);
+  query_ << name << " < " << val;
 }
-void warehouse_ros_sqlite::Query::append(const std::string & name, const bool val)
+
+void Query::appendLT(const std::string & name, const int val)
 {
-  doappend(name, " == ", static_cast<int>(val));
+  if (!values_.empty()) {
+    query_ << " AND ";
+  }
+  values_.emplace_back(val);
+  query_ << name << " < " << val;
 }
-void warehouse_ros_sqlite::Query::appendLT(const std::string & name, const double val)
+
+void Query::appendLTE(const std::string & name, const double val)
 {
-  doappend(name, " < ", val);
+  if (!values_.empty()) {
+    query_ << " AND ";
+  }
+  values_.emplace_back(val);
+  query_ << name << " <= " << val;
 }
-void warehouse_ros_sqlite::Query::appendLT(const std::string & name, const int val)
+
+void Query::appendLTE(const std::string & name, const int val)
 {
-  doappend(name, " < ", val);
+  if (!values_.empty()) {
+    query_ << " AND ";
+  }
+  values_.emplace_back(val);
+  query_ << name << " <= " << val;
 }
-void warehouse_ros_sqlite::Query::appendLTE(const std::string & name, const double val)
+
+void Query::appendGT(const std::string & name, const double val)
 {
-  doappend(name, " <= ", val);
+  if (!values_.empty()) {
+    query_ << " AND ";
+  }
+  values_.emplace_back(val);
+  query_ << name << " > " << val;
 }
-void warehouse_ros_sqlite::Query::appendLTE(const std::string & name, const int val)
+
+void Query::appendGT(const std::string & name, const int val)
 {
-  doappend(name, " <= ", val);
+  if (!values_.empty()) {
+    query_ << " AND ";
+  }
+  values_.emplace_back(val);
+  query_ << name << " > " << val;
 }
-void warehouse_ros_sqlite::Query::appendGT(const std::string & name, const double val)
+
+void Query::appendGTE(const std::string & name, const double val)
 {
-  doappend(name, " > ", val);
+  if (!values_.empty()) {
+    query_ << " AND ";
+  }
+  values_.emplace_back(val);
+  query_ << name << " >= " << val;
 }
-void warehouse_ros_sqlite::Query::appendGT(const std::string & name, const int val)
+
+void Query::appendGTE(const std::string & name, const int val)
 {
-  doappend(name, " > ", val);
+  if (!values_.empty()) {
+    query_ << " AND ";
+  }
+  values_.emplace_back(val);
+  query_ << name << " >= " << val;
 }
-void warehouse_ros_sqlite::Query::appendGTE(const std::string & name, const double val)
+
+void Query::appendRange(const std::string & name, const double lower, const double upper)
 {
-  doappend(name, " >= ", val);
+  if (!values_.empty()) {
+    query_ << " AND ";
+  }
+  values_.emplace_back(lower);
+  values_.emplace_back(upper);
+  query_ << name << " > " << lower << " AND " << name << " < " << upper;
 }
-void warehouse_ros_sqlite::Query::appendGTE(const std::string & name, const int val)
+
+void Query::appendRange(const std::string & name, const int lower, const int upper)
 {
-  doappend(name, " >= ", val);
+  if (!values_.empty()) {
+    query_ << " AND ";
+  }
+  values_.emplace_back(lower);
+  values_.emplace_back(upper);
+  query_ << name << " > " << lower << " AND " << name << " < " << upper;
 }
-void warehouse_ros_sqlite::Query::appendRange(
-  const std::string & name, const double lower,
-  const double upper)
+
+void Query::appendRangeInclusive(const std::string & name, const double lower, const double upper)
 {
-  doappend(name, " > ", lower);
-  doappend(name, " < ", upper);
+  if (!values_.empty()) {
+    query_ << " AND ";
+  }
+  values_.emplace_back(lower);
+  values_.emplace_back(upper);
+  query_ << name << " >= " << lower << " AND " << name << " <= " << upper;
 }
-void warehouse_ros_sqlite::Query::appendRange(
-  const std::string & name, const int lower,
-  const int upper)
+
+void Query::appendRangeInclusive(const std::string & name, const int lower, const int upper)
 {
-  doappend(name, " > ", lower);
-  doappend(name, " < ", upper);
+  if (!values_.empty()) {
+    query_ << " AND ";
+  }
+  values_.emplace_back(lower);
+  values_.emplace_back(upper);
+  query_ << name << " >= " << lower << " AND " << name << " <= " << upper;
 }
-void warehouse_ros_sqlite::Query::appendRangeInclusive(
-  const std::string & name, const double lower,
-  const double upper)
+
+std::string Query::buildCouchDbQuery(const std::string & base_query) const
 {
-  doappend(name, " >= ", lower);
-  doappend(name, " <= ", upper);
+  // Suppress unused parameter warning
+  (void)base_query;
+  
+  // For CouchDB, we would build a JSON query using CouchDB's Mango query language
+  // This is a simplified implementation
+  Json::Value selector;
+  
+  // For now, just return a basic selector
+  // In a full implementation, we'd parse the query_ stringstream and convert to JSON
+  if (!empty()) {
+    RCLCPP_WARN_STREAM(LOGGER, "Complex queries not fully implemented for CouchDB backend");
+  }
+  
+  Json::StreamWriterBuilder builder;
+  return Json::writeString(builder, selector);
 }
-void warehouse_ros_sqlite::Query::appendRangeInclusive(
-  const std::string & name, const int lower,
-  const int upper)
-{
-  doappend(name, " >= ", lower);
-  doappend(name, " <= ", upper);
-}
+
+}  // namespace warehouse_ros_couchdb

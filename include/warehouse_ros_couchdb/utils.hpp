@@ -28,10 +28,10 @@
 
 // SPDX-License-Identifier: BSD-3-Clause
 
-#ifndef WAREHOUSE_ROS_SQLITE__UTILS_HPP_
-#define WAREHOUSE_ROS_SQLITE__UTILS_HPP_
+#ifndef WAREHOUSE_ROS_COUCHDB__UTILS_HPP_
+#define WAREHOUSE_ROS_COUCHDB__UTILS_HPP_
 
-#include <warehouse_ros_sqlite/warehouse_ros_sqlite_export.hpp>
+#include <warehouse_ros_couchdb/warehouse_ros_couchdb_export.hpp>
 
 #include <algorithm>
 #include <array>
@@ -41,22 +41,8 @@
 #include <string>
 #include <stdexcept>
 
-extern "C" {
-struct sqlite3_stmt;
-struct sqlite3;
-}
-
-namespace warehouse_ros_sqlite
+namespace warehouse_ros_couchdb
 {
-struct WAREHOUSE_ROS_SQLITE_EXPORT Sqlite3StmtDeleter
-{
-  void operator()(sqlite3_stmt * stmt) const;
-};
-WAREHOUSE_ROS_SQLITE_EXPORT void sqlite3_delete(sqlite3 * db);
-
-using sqlite3_stmt_ptr = std::unique_ptr<sqlite3_stmt, Sqlite3StmtDeleter>;
-using sqlite3_ptr = std::shared_ptr<sqlite3>;
-
 namespace schema
 {
 namespace detail
@@ -131,11 +117,11 @@ inline escaped_tablename escape_and_mangle_database_and_collection_name(
 
 }  // namespace schema
 
-struct WAREHOUSE_ROS_SQLITE_EXPORT NullValue
+struct WAREHOUSE_ROS_COUCHDB_EXPORT NullValue
 {
 };
 
-inline WAREHOUSE_ROS_SQLITE_EXPORT std::array<unsigned char, 16> parse_md5_hexstring(
+inline WAREHOUSE_ROS_COUCHDB_EXPORT std::array<unsigned char, 16> parse_md5_hexstring(
   const std::string & md5)
 {
   std::array<unsigned char, 16> binary_md5;
@@ -160,7 +146,7 @@ inline WAREHOUSE_ROS_SQLITE_EXPORT std::array<unsigned char, 16> parse_md5_hexst
   return binary_md5;
 }
 
-inline WAREHOUSE_ROS_SQLITE_EXPORT std::string verify_md5_string(const std::string & md5)
+inline WAREHOUSE_ROS_COUCHDB_EXPORT std::string verify_md5_string(const std::string & md5)
 {
   static const char characters[] = "0123456789ABCDEF";
   if (md5.size() == 32) {
@@ -177,6 +163,6 @@ inline WAREHOUSE_ROS_SQLITE_EXPORT std::string verify_md5_string(const std::stri
   }
   return ans;
 }
-}  // namespace warehouse_ros_sqlite
+}  // namespace warehouse_ros_couchdb
 
 #endif  // WAREHOUSE_ROS_SQLITE__UTILS_HPP_

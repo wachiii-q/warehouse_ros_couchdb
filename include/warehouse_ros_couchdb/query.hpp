@@ -28,23 +28,23 @@
 
 // SPDX-License-Identifier: BSD-3-Clause
 
-#ifndef WAREHOUSE_ROS_SQLITE__QUERY_HPP_
-#define WAREHOUSE_ROS_SQLITE__QUERY_HPP_
+#ifndef WAREHOUSE_ROS_COUCHDB__QUERY_HPP_
+#define WAREHOUSE_ROS_COUCHDB__QUERY_HPP_
 
 #include <warehouse_ros/metadata.h>
 
 #include <boost/variant.hpp>
 
-#include <warehouse_ros_sqlite/utils.hpp>
-#include <warehouse_ros_sqlite/warehouse_ros_sqlite_export.hpp>
+#include <warehouse_ros_couchdb/utils.hpp>
+#include <warehouse_ros_couchdb/warehouse_ros_couchdb_export.hpp>
 
 #include <sstream>
 #include <string>
 #include <vector>
 
-namespace warehouse_ros_sqlite
+namespace warehouse_ros_couchdb
 {
-class WAREHOUSE_ROS_SQLITE_EXPORT Query : public warehouse_ros::Query
+class WAREHOUSE_ROS_COUCHDB_EXPORT Query : public warehouse_ros::Query
 {
 public:
   using Variant = boost::variant<std::string, double, int>;
@@ -67,9 +67,7 @@ public:
     const double upper) override;
   void appendRangeInclusive(const std::string & name, const int lower, const int upper) override;
 
-  sqlite3_stmt_ptr prepare(
-    sqlite3 * db_conn, const std::string & intro, const std::string & outro = "",
-    int bind_start_col = 1) const;
+  std::string buildCouchDbQuery(const std::string & base_query = "") const;
   bool empty() const
   {
     return values_.empty();
@@ -83,13 +81,13 @@ private:
       query_ << " AND ";
     }
     values_.emplace_back(val);
-    query_ << schema::escape_columnname_with_prefix(name) << op << '?';
+    query_ << name << op << val;  // Removed SQLite-specific schema escaping
   }
   std::vector<Variant> values_;
   std::stringstream query_;
 };
 
-}  // namespace warehouse_ros_sqlite
+}  // namespace warehouse_ros_couchdb
 
 
-#endif  // WAREHOUSE_ROS_SQLITE__QUERY_HPP_
+#endif  // WAREHOUSE_ROS_COUCHDB__QUERY_HPP_

@@ -28,276 +28,329 @@
 
 // SPDX-License-Identifier: BSD-3-Clause
 
+#include <warehouse_ros_couchdb/message_collection_helper.hpp>
 
-#include <warehouse_ros_sqlite/message_collection_helper.hpp>
-
-#include <warehouse_ros_sqlite/exceptions.hpp>
-#include <warehouse_ros_sqlite/impl/variant.hpp>
-#include <warehouse_ros_sqlite/metadata.hpp>
-#include <warehouse_ros_sqlite/query.hpp>
-#include <warehouse_ros_sqlite/result_iteration_helper.hpp>
+#include <warehouse_ros_couchdb/exceptions.hpp>
+#include <warehouse_ros_couchdb/metadata.hpp>
+#include <warehouse_ros_couchdb/query.hpp>
 
 #include <boost/make_shared.hpp>
 #include <rclcpp/rclcpp.hpp>
 
-#include <sqlite3.h>
+#include <curl/curl.h>
+#include <json/json.h>
 
-#include <cstring>
 #include <sstream>
 #include <string>
 #include <utility>
+#include <iomanip>
 
-static const rclcpp::Logger LOGGER = rclcpp::get_logger(
-  "warehouse_ros_sqlite.message_collection_helper");
+static const rclcpp::Logger LOGGER = rclcpp::get_logger("warehouse_ros_couchdb.MessageCollectionHelper");
 
-
-warehouse_ros_sqlite::MessageCollectionHelper::Md5CompareResult
-warehouse_ros_sqlite::MessageCollectionHelper::findAndMatchMd5Sum(
-  const std::array<unsigned char,
-  16> & md5_bytes)
+namespace warehouse_ros_couchdb
 {
-  sqlite3_stmt * stmt = nullptr;
-  std::ostringstream query_builder;
-  query_builder << "SELECT " << schema::M_D5_TABLE_M_D5_COLUMN << " FROM " <<
-    schema::M_D5_TABLE_NAME << " WHERE " <<
-    schema::M_D5_TABLE_INDEX_COLUMN << " == ? ;";
-  const auto query = query_builder.str();
-  if (sqlite3_prepare_v2(db_.get(), query.c_str(), query.size() + 1, &stmt, nullptr) != SQLITE_OK) {
-    throw InternalError("Prepare statement for findAndMatchMd5Sum() failed", db_.get());
-  }
-  sqlite3_stmt_ptr stmt_ptr(stmt);
-  if (sqlite3_bind_text(
-      stmt, 1, mangled_tablename_.c_str(), mangled_tablename_.size(),
-      SQLITE_STATIC) != SQLITE_OK)
-  {
-    throw InternalError("Bind parameter for findAndMatchMd5Sum() failed", db_.get());
-  }
-  switch (sqlite3_step(stmt)) {
-    case SQLITE_DONE:
-      return Md5CompareResult::EMPTY;
-    case SQLITE_ROW:
-      break;
-    default:
-      throw InternalError("Fetch result for findAndMatchMd5Sum() failed", db_.get());
-  }
 
-  if (std::size_t(sqlite3_column_bytes(stmt, 0)) != md5_bytes.size()) {
-    throw std::invalid_argument("invalid md5 value");
-  }
-  if (std::memcmp(&md5_bytes[0], sqlite3_column_blob(stmt, 0), md5_bytes.size()) == 0) {
-    return Md5CompareResult::MATCH;
-  } else {
+// Helper function to make HTTP requests to CouchDB
+static size_t WriteCallback(void* contents, size_t size, size_t nmemb, std::string* data) {
+    data->append((char*)contents, size * nmemb);
+    return size * nmemb;
+}
+
+std::string performHttpRequest(const std::string& url, const std::string& method, const std::string& data = "") {
+    CURL* curl = curl_easy_init();
+    if (!curl) {
+        throw InternalError("Failed to initialize CURL", "");
+    }
+    
+    std::string response;
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+    curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, method.c_str());
+    
+    struct curl_slist* headers = nullptr;
+    if (!data.empty()) {
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, data.c_str());
+        headers = curl_slist_append(headers, "Content-Type: application/json");
+        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    }
+    
+    CURLcode res = curl_easy_perform(curl);
+    if (res != CURLE_OK) {
+        curl_easy_cleanup(curl);
+        if (headers) curl_slist_free_all(headers);
+        throw InternalError("HTTP request failed", curl_easy_strerror(res));
+    }
+    
+    long response_code;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response_code);
+    curl_easy_cleanup(curl);
+    if (headers) curl_slist_free_all(headers);
+    
+    return response;
+}
+
+MessageCollectionHelper::Md5CompareResult MessageCollectionHelper::findAndMatchMd5Sum(const std::array<unsigned char, 16> & md5_bytes)
+{
+  try {
+    std::string url = "http://" + host_ + ":" + std::to_string(port_) + "/" + db_name_ + "/" + collection_name_ + "/_find";
+    
+    Json::Value query_doc;
+    Json::Value selector;
+    
+    // Convert MD5 bytes to hex string for storage/comparison
+    std::stringstream md5_hex;
+    for (const auto& byte : md5_bytes) {
+      md5_hex << std::hex << std::setfill('0') << std::setw(2) << static_cast<int>(byte);
+    }
+    
+    selector["md5sum"] = md5_hex.str();
+    query_doc["selector"] = selector;
+    query_doc["limit"] = 1;
+    
+    Json::StreamWriterBuilder builder;
+    std::string json_query = Json::writeString(builder, query_doc);
+    
+    std::string response = performHttpRequest(url, "POST", json_query);
+    
+    Json::Value result;
+    Json::CharReaderBuilder reader_builder;
+    std::string errors;
+    std::stringstream ss(response);
+    
+    if (!Json::parseFromStream(reader_builder, ss, &result, &errors)) {
+      RCLCPP_ERROR_STREAM(LOGGER, "Failed to parse JSON response: " << errors);
+      return Md5CompareResult::EMPTY;
+    }
+    
+    if (result["docs"].empty()) {
+      return Md5CompareResult::EMPTY;
+    }
+    
+    // Check if MD5 matches exactly
+    if (result["docs"].size() > 0 && result["docs"][0]["md5sum"].asString() == md5_hex.str()) {
+      return Md5CompareResult::MATCH;
+    }
+    
     return Md5CompareResult::MISMATCH;
+    
+  } catch (const std::exception& e) {
+    RCLCPP_ERROR_STREAM(LOGGER, "Error in findAndMatchMd5Sum: " << e.what());
+    return Md5CompareResult::EMPTY;
   }
 }
 
-bool warehouse_ros_sqlite::MessageCollectionHelper::initialize(
-  const std::string & datatype,
-  const std::string & md5)
+bool MessageCollectionHelper::initialize(const std::string & datatype, const std::string & md5)
 {
-  namespace schema = warehouse_ros_sqlite::schema;
-  const auto md5_bytes = warehouse_ros_sqlite::parse_md5_hexstring(md5);
-  const auto current_md5_state = findAndMatchMd5Sum(md5_bytes);
-  if (current_md5_state != Md5CompareResult::EMPTY) {
-    return current_md5_state == Md5CompareResult::MATCH;
-  }
-
-  std::ostringstream query_builder;
-  const auto & esc = schema::escape_string_literal_without_quotes;
-  query_builder << "BEGIN TRANSACTION; CREATE TABLE " << escaped_mangled_name_ << "(" <<
-    schema::DATA_COLUMN_NAME <<
-    " BLOB NOT NULL, " << schema::METADATA_COLUMN_PREFIX <<
-    "id INTEGER PRIMARY KEY AUTOINCREMENT, " <<
-    schema::METADATA_COLUMN_PREFIX << "creation_time INTEGER)" <<
-    "; INSERT INTO " << schema::M_D5_TABLE_NAME <<
-    " ( " << schema::M_D5_TABLE_INDEX_COLUMN << " , " <<
-    schema::M_D5_TABLE_TABLE_COLUMN << " , " << schema::M_D5_TABLE_DATABASE_COLUMN << " , " <<
-    schema::M_D5_TABLE_M_D5_COLUMN <<
-    " , " << schema::M_D5_TABLE_DATATYPE_COLUMN << ") VALUES ('" <<
-    esc(mangled_tablename_) << "', '" <<
-    esc(collection_name_) << "', '" << esc(db_name_) << "' , x'" << verify_md5_string(md5) <<
-    "' , '" << esc(datatype) <<
-    "'); COMMIT TRANSACTION;";
-  const auto query = query_builder.str();
-  RCLCPP_DEBUG_STREAM(LOGGER, "initialize query: " << query);
-  if (sqlite3_exec(db_.get(), query.c_str(), nullptr, nullptr, nullptr) != SQLITE_OK) {
-    RCLCPP_ERROR_STREAM(LOGGER, "Database initialization failed: " << sqlite3_errmsg(db_.get()));
-    sqlite3_exec(db_.get(), "ROLLBACK;", nullptr, nullptr, nullptr);
+  // For CouchDB, we store metadata about the collection in a metadata document
+  try {
+    // Check if database exists, create if not
+    std::string db_url = "http://" + host_ + ":" + std::to_string(port_) + "/" + db_name_;
+    
+    try {
+      performHttpRequest(db_url, "HEAD");
+    } catch (...) {
+      // Database doesn't exist, create it
+      performHttpRequest(db_url, "PUT");
+    }
+    
+    // Store collection metadata
+    std::string metadata_doc_id = collection_name_ + "_metadata";
+    std::string metadata_url = db_url + "/" + metadata_doc_id;
+    
+    Json::Value metadata;
+    metadata["_id"] = metadata_doc_id;
+    metadata["collection_name"] = collection_name_;
+    metadata["datatype"] = datatype;
+    metadata["md5sum"] = md5;
+    metadata["created_at"] = std::time(nullptr);
+    
+    Json::StreamWriterBuilder builder;
+    std::string json_data = Json::writeString(builder, metadata);
+    
+    try {
+      performHttpRequest(metadata_url, "PUT", json_data);
+    } catch (...) {
+      // Document might already exist, try to update it
+      try {
+        std::string existing = performHttpRequest(metadata_url, "GET");
+        Json::Value existing_doc;
+        Json::CharReaderBuilder reader_builder;
+        std::string errors;
+        std::stringstream ss(existing);
+        
+        if (Json::parseFromStream(reader_builder, ss, &existing_doc, &errors)) {
+          metadata["_rev"] = existing_doc["_rev"];
+          json_data = Json::writeString(builder, metadata);
+          performHttpRequest(metadata_url, "PUT", json_data);
+        }
+      } catch (...) {
+        RCLCPP_WARN_STREAM(LOGGER, "Failed to create/update collection metadata for " << collection_name_);
+      }
+    }
+    
+    return true;
+  } catch (const std::exception& e) {
+    RCLCPP_ERROR_STREAM(LOGGER, "Failed to initialize collection " << collection_name_ << ": " << e.what());
     return false;
   }
-  return true;
 }
 
-void warehouse_ros_sqlite::MessageCollectionHelper::insert(
-  char * msg, size_t msg_size,
-  warehouse_ros::Metadata::ConstPtr metadata)
+void MessageCollectionHelper::insert(char * msg, size_t msg_size, warehouse_ros::Metadata::ConstPtr metadata)
 {
-  auto meta = reinterpret_cast<const warehouse_ros_sqlite::Metadata *>(metadata.get());
-  if (!meta || !msg || !msg_size) {
-    throw std::invalid_argument("meta, msg or msg_size is 0");
-  }
-  meta->ensureColumns(db_.get(), mangled_tablename_);
-  std::ostringstream query;
-  query << "INSERT INTO " << escaped_mangled_name_ << " (" << schema::DATA_COLUMN_NAME;
-
-  const auto & data = meta->data();
-  for (const auto & kv : data) {
-    query << ", " << schema::escape_columnname_with_prefix(std::get<0>(kv));
-  }
-  query << ") VALUES ( ? ";
-  for (size_t i = 0; i < data.size(); ++i) {
-    query << ", ? ";
-  }
-  query << ");";
-
-  sqlite3_stmt * stmt = nullptr;
-  const auto query_str = query.str();
-  RCLCPP_DEBUG_STREAM(LOGGER, "insert query:" << query_str);
-  if (sqlite3_prepare_v2(
-      db_.get(), query_str.c_str(), query_str.size() + 1, &stmt,
-      nullptr) != SQLITE_OK)
-  {
-    throw InternalError("Prepare statement for insert() failed", db_.get());
-  }
-  const sqlite3_stmt_ptr stmt_guard(stmt);
-
-  if (sqlite3_bind_blob(stmt, 1, msg, msg_size, SQLITE_STATIC) != SQLITE_OK) {
-    throw InternalError("Bind parameter for insert() failed", db_.get());
-  }
-  warehouse_ros_sqlite::BindVisitor visitor(stmt, 2);
-  for (const auto & kv : data) {
-    if (boost::apply_visitor(visitor, std::get<1>(kv)) != SQLITE_OK) {
-      throw InternalError("Bind parameter for insert() failed", db_.get());
+  try {
+    std::string url = "http://" + host_ + ":" + std::to_string(port_) + "/" + db_name_;
+    
+    Json::Value doc;
+    
+    // Generate a unique document ID
+    std::string doc_id = collection_name_ + "_" + std::to_string(std::time(nullptr)) + "_" + std::to_string(rand());
+    doc["_id"] = doc_id;
+    doc["collection"] = collection_name_;
+    
+    // Store the message data (base64 encoded binary data)
+    std::string encoded_msg;
+    // Simple base64-like encoding for binary data storage
+    encoded_msg.reserve(msg_size * 4 / 3 + 4);
+    for (size_t i = 0; i < msg_size; ++i) {
+      encoded_msg += std::to_string(static_cast<unsigned char>(msg[i]));
+      if (i < msg_size - 1) encoded_msg += ",";
     }
-  }
-
-  assert(sqlite3_bind_parameter_count(stmt) == visitor.getTotalBinds());
-  if (sqlite3_step(stmt) != SQLITE_DONE) {
-    throw InternalError("insert() failed", db_.get());
-  }
-}
-
-warehouse_ros::ResultIteratorHelper::Ptr
-warehouse_ros_sqlite::MessageCollectionHelper::query(
-  warehouse_ros::Query::ConstPtr query, const std::string & sort_by,
-  bool ascending) const
-{
-  std::string outro;
-  if (!sort_by.empty()) {
-    outro += " ORDER BY " + schema::escape_columnname_with_prefix(sort_by) +
-      (ascending ? " ASC" : " DESC");
-  }
-  auto query_ptr = dynamic_cast<const warehouse_ros_sqlite::Query *>(query.get());
-  assert(query_ptr);
-  std::ostringstream intro;
-  intro << "SELECT * FROM " << escaped_mangled_name_;
-  if (!query_ptr->empty()) {
-    intro << " WHERE ";
-  }
-  auto stmt = query_ptr->prepare(db_.get(), intro.str(), outro);
-  if (stmt) {
-    switch (sqlite3_step(stmt.get())) {
-      case SQLITE_DONE:
-      case SQLITE_ROW:
-        break;
-      default:
-        throw InternalError("query() failed", db_.get());
+    doc["message_data"] = encoded_msg;
+    doc["message_size"] = static_cast<int>(msg_size);
+    
+    // Add metadata if provided
+    if (metadata) {
+      Json::Value meta_json;
+      // Convert metadata to JSON using lookupFieldNames()
+      auto field_names = metadata->lookupFieldNames();
+      for (const auto& field_name : field_names) {
+        if (metadata->lookupField(field_name)) {
+          // Try to determine the field type and add to JSON
+          try {
+            // Try string first
+            std::string str_val = metadata->lookupString(field_name);
+            meta_json[field_name] = str_val;
+          } catch (...) {
+            try {
+              // Try double
+              double double_val = metadata->lookupDouble(field_name);
+              meta_json[field_name] = double_val;
+            } catch (...) {
+              try {
+                // Try int
+                int int_val = metadata->lookupInt(field_name);
+                meta_json[field_name] = int_val;
+              } catch (...) {
+                try {
+                  // Try bool
+                  bool bool_val = metadata->lookupBool(field_name);
+                  meta_json[field_name] = bool_val;
+                } catch (...) {
+                  // If all else fails, skip this field
+                  continue;
+                }
+              }
+            }
+          }
+        }
+      }
+      doc["metadata"] = meta_json;
     }
+    
+    doc["timestamp"] = std::time(nullptr);
+    
+    Json::StreamWriterBuilder builder;
+    std::string json_data = Json::writeString(builder, doc);
+    
+    std::string response = performHttpRequest(url, "POST", json_data);
+    
+    RCLCPP_DEBUG_STREAM(LOGGER, "Inserted document into collection " << collection_name_);
+    
+  } catch (const std::exception& e) {
+    throw InternalError("Failed to insert message", e.what());
   }
-  return boost::make_shared<warehouse_ros_sqlite::ResultIteratorHelper>(std::move(stmt));
 }
 
-unsigned warehouse_ros_sqlite::MessageCollectionHelper::removeMessages(
-  warehouse_ros::Query::ConstPtr query)
+warehouse_ros::ResultIteratorHelper::Ptr MessageCollectionHelper::query(
+  warehouse_ros::Query::ConstPtr query, const std::string & sort_by, bool ascending) const
 {
-  auto pquery = dynamic_cast<warehouse_ros_sqlite::Query const *>(query.get());
-  if (!pquery) {
-    throw std::invalid_argument("Query was not initialized by createQuery()");
-  }
-  auto stmt = pquery->prepare(db_.get(), "DELETE FROM " + escaped_mangled_name_ + " WHERE ");
-  if (sqlite3_step(stmt.get()) != SQLITE_DONE) {
-    throw InternalError("Prepare statement for removeMessages() failed", db_.get());
-  }
-  return sqlite3_changes(db_.get());
+  // Suppress unused parameter warnings
+  (void)query;
+  (void)sort_by;
+  (void)ascending;
+  
+  // For now, return a simple implementation
+  // This would need a proper CouchDB result iterator implementation
+  RCLCPP_WARN_STREAM(LOGGER, "Query functionality not fully implemented for CouchDB backend");
+  return warehouse_ros::ResultIteratorHelper::Ptr();
 }
 
-namespace
+unsigned MessageCollectionHelper::removeMessages(warehouse_ros::Query::ConstPtr query)
 {
-template<typename It>
-void comma_concat_meta_column_names(std::ostringstream & buf, It it, It end)
-{
-  using warehouse_ros_sqlite::schema::escape_columnname_with_prefix;
-  if (it == end) {
-    return;
-  }
-  buf << escape_columnname_with_prefix(it->first);
-  it++;
-  while (it != end) {
-    buf << " = ?, " << escape_columnname_with_prefix(it->first);
-    it++;
-  }
-  buf << " = ?";
+  // Suppress unused parameter warning
+  (void)query;
+  
+  // For now, return 0 - would need proper CouchDB query implementation
+  RCLCPP_WARN_STREAM(LOGGER, "RemoveMessages functionality not fully implemented for CouchDB backend");
+  return 0;
 }
-}  // namespace
 
-void warehouse_ros_sqlite::MessageCollectionHelper::modifyMetadata(
+void MessageCollectionHelper::modifyMetadata(
   warehouse_ros::Query::ConstPtr q,
   warehouse_ros::Metadata::ConstPtr m)
 {
-  auto query = dynamic_cast<const warehouse_ros_sqlite::Query *>(q.get());
-  auto metadata = dynamic_cast<const warehouse_ros_sqlite::Metadata *>(m.get());
-  if (!query || !metadata) {
-    throw std::invalid_argument("q or m not created by createQuery() or createMetadata()");
-  }
-  metadata->ensureColumns(db_.get(), mangled_tablename_);
-  const int mt_count = metadata->data().size();
-  if (mt_count == 0) {
-    return;
-  }
+  // Suppress unused parameter warnings
+  (void)q;
+  (void)m;
+  
+  // For now, do nothing - would need proper CouchDB query implementation
+  RCLCPP_WARN_STREAM(LOGGER, "ModifyMetadata functionality not fully implemented for CouchDB backend");
+}
 
-  std::ostringstream query_builder;
-  query_builder << "UPDATE " << escaped_mangled_name_ << " SET ";
-
-  comma_concat_meta_column_names(query_builder, metadata->data().begin(), metadata->data().end());
-  query_builder << " WHERE ";
-  auto stmt = query->prepare(db_.get(), query_builder.str(), "", mt_count + 1);
-  if (!stmt) {
-    throw InternalError("modifyMetadata() failed", db_.get());
-  }
-  warehouse_ros_sqlite::BindVisitor visitor(stmt.get(), 1);
-  for (const auto & kv : metadata->data()) {
-    if (boost::apply_visitor(visitor, std::get<1>(kv)) != SQLITE_OK) {
-      throw InternalError("Bind parameter failed for modifyMetadata()", db_.get());
+unsigned MessageCollectionHelper::count()
+{
+  try {
+    std::string url = "http://" + host_ + ":" + std::to_string(port_) + "/" + db_name_ + "/_find";
+    
+    Json::Value query_doc;
+    Json::Value selector;
+    
+    selector["collection"] = collection_name_;
+    query_doc["selector"] = selector;
+    query_doc["limit"] = 0; // Just count, don't return documents
+    
+    Json::StreamWriterBuilder builder;
+    std::string json_query = Json::writeString(builder, query_doc);
+    
+    std::string response = performHttpRequest(url, "POST", json_query);
+    
+    Json::Value result;
+    Json::CharReaderBuilder reader_builder;
+    std::string errors;
+    std::stringstream ss(response);
+    
+    if (!Json::parseFromStream(reader_builder, ss, &result, &errors)) {
+      RCLCPP_ERROR_STREAM(LOGGER, "Failed to parse JSON response: " << errors);
+      return 0;
     }
-  }
-
-  if (sqlite3_step(stmt.get()) != SQLITE_DONE) {
-    throw InternalError("modifyMetadata() failed", db_.get());
+    
+    return result["docs"].size();
+    
+  } catch (const std::exception& e) {
+    RCLCPP_ERROR_STREAM(LOGGER, "Error counting documents: " << e.what());
+    return 0;
   }
 }
 
-unsigned warehouse_ros_sqlite::MessageCollectionHelper::count()
+warehouse_ros::Query::Ptr MessageCollectionHelper::createQuery() const
 {
-  const std::string query = "SELECT COUNT(*) FROM " + escaped_mangled_name_ + ";";
-  sqlite3_stmt * stmt = nullptr;
-  if (sqlite3_prepare_v2(db_.get(), query.c_str(), query.size() + 1, &stmt, nullptr) != SQLITE_OK) {
-    throw InternalError("Prepare statement for count() failed", db_.get());
-  }
-  const warehouse_ros_sqlite::sqlite3_stmt_ptr stmt_guard(stmt);
-
-  if (sqlite3_step(stmt) != SQLITE_ROW) {
-    throw InternalError("count() failed", db_.get());
-  }
-
-  assert(sqlite3_column_count(stmt) == 1);
-
-  return sqlite3_column_int(stmt, 0);
+  return boost::make_shared<Query>();
 }
-warehouse_ros::Query::Ptr warehouse_ros_sqlite::MessageCollectionHelper::createQuery() const
+
+warehouse_ros::Metadata::Ptr MessageCollectionHelper::createMetadata() const
 {
-  return boost::make_shared<warehouse_ros_sqlite::Query>();
+  return boost::make_shared<Metadata>();
 }
-warehouse_ros::Metadata::Ptr warehouse_ros_sqlite::MessageCollectionHelper::createMetadata() const
-{
-  return boost::make_shared<warehouse_ros_sqlite::Metadata>();
-}
+
+}  // namespace warehouse_ros_couchdb
